@@ -1,0 +1,31 @@
+# Kept from when this lived inside the tomato64 tree, whose top-level
+# .gitignore has a bare "src/" - meant for the buildroot checkout at /src, but
+# written without a leading slash, so it matched a directory named src at ANY
+# depth and silently swallowed the Broadcom sources under userspace/*/src and
+# vendor/shared/bcmwifi/src. Harmless here, and cheap insurance if this tree is
+# ever vendored back into a repo that ignores src/ again.
+!**/src/
+
+# Build products. The vendored SOURCES are tracked deliberately (see
+# vendor/README.md); what the build makes from them is not.
+/wl_apsta.o_shipped
+*.o
+*.a
+*.ko
+*.mod
+*.mod.c
+.*.cmd
+/Module.symvers
+/modules.order
+/.tmp_versions/
+/userspace/wlconf/wlconf
+/userspace/wldiag/wldiag
+/userspace/eapd/eapd
+/userspace/nas/nas
+/userspace/uclibc-compat/uclibc.so
+/userspace/uclibc-compat/wl
+
+# ...except the blobs themselves, which ARE the package: the driver, and
+# FreshTomato's prebuilt `wl` tool (they ship no source for it).
+!/vendor/wl/linux/wl_apsta.o
+!/vendor/wl/arm-uclibc/wl
