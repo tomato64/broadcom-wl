@@ -274,7 +274,12 @@ void wl_shim_remove_proc_entry(const char *name, struct proc_dir_entry *parent)
 
 static int __init wl_shim_init(void)
 {
+	int err;
+
 	num_physpages = totalram_pages();
+	err = wl_shadow_skb_init();	/* the per-packet shadow cache */
+	if (err)
+		return err;
 	wl_shadow_l2c_init();	/* must precede the blob's init */
 	wl_shadow_debug_init();	/* likewise: sets the blob's msg levels */
 	pr_info("wl: shim init (num_physpages=%lu)\n", num_physpages);

@@ -191,6 +191,7 @@ void wl_skb_sync_to_blob(void *blob_skb);
  * whether that is freed, consumed by the stack, or still in flight. */
 void wl_skb_shadow_put(void *blob_skb);
 
+int  wl_shadow_skb_init(void);
 void wl_shadow_skb_exit(void);
 
 /*

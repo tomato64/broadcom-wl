@@ -40,11 +40,43 @@
 #include <linux/scatterlist.h>
 #include <linux/errno.h>
 
+/*
+ * The cut-through hook is a Tomato64 kernel patch. Build without it and the
+ * receive path simply stays as it was.
+ */
+#if defined(__has_include)
+#  if __has_include(<linux/netdev_cutthrough.h>)
+#    include <linux/netdev_cutthrough.h>
+#    define CTF_HOOK 1
+#  endif
+#endif
+#ifndef CTF_HOOK
+#  define CTF_HOOK 0
+#endif
+
 #include "wl_shadow_skb.h"
 #include "wl_shadow_netdev.h"
 #include "wl_shadow.h"
 
 static atomic_t wl_skb_live = ATOMIC_INIT(0);
+
+/*
+ * Shadows are allocated and freed for every packet on both paths, which the
+ * profiler sees: on a Netgear R7000 forwarding WiFi traffic, the slab work and
+ * the zeroing together are a few percent of the busy core. A cache of our own
+ * keeps them out of the shared kmalloc-256 pool, so the objects stay hot and
+ * neither allocation nor free has to pick a size class.
+ */
+static struct kmem_cache *wl_skb_cache;
+
+int wl_shadow_skb_init(void)
+{
+	wl_skb_cache = kmem_cache_create("wl_skb_shadow",
+					 sizeof(struct wl_skb_shadow), 0,
+					 SLAB_HWCACHE_ALIGN, NULL);
+
+	return wl_skb_cache ? 0 : -ENOMEM;
+}
 
 static inline struct wl_skb_shadow *to_shadow(void *blob_skb)
 {
@@ -187,12 +219,22 @@ void *wl_skb_wrap(struct sk_buff *real)
 		return NULL;
 
 	/* GFP_ATOMIC: this runs on the receive and transmit paths. */
-	sh = kzalloc(sizeof(*sh), GFP_ATOMIC);
+	sh = kmem_cache_alloc(wl_skb_cache, GFP_ATOMIC);
 	if (!sh) {
 		pr_err_once("wl: no memory for skb shadow\n");
 		return NULL;
 	}
 
+	/*
+	 * Only s236 has to start clean, and it has to: the blob reads fields
+	 * of its sk_buff that nothing here mirrors, and expects them zero on a
+	 * fresh packet. Everything else in the shadow is assigned below, so
+	 * this is the whole of what kzalloc() used to do for us.
+	 */
+	memset(sh->s236, 0, sizeof(sh->s236));
+#ifdef WL_SKB_OPS_TRACE
+	sh->nops = 0;
+#endif
 	sh->real  = real;
 	sh->magic = WL_SKB_SHADOW_MAGIC;
 	sync_down(sh);
@@ -227,7 +269,7 @@ void wl_skb_shadow_put(void *blob_skb)
 		return;
 	sh->magic = 0;
 	atomic_dec(&wl_skb_live);
-	kfree(sh);
+	kmem_cache_free(wl_skb_cache, sh);
 }
 
 /* ---- the six rerouted entry points ---------------------------------- */
@@ -363,6 +405,20 @@ int wl_shim_netif_rx(void *blob_skb)
 
 	wl_skb_shadow_put(blob_skb);
 
+#if CTF_HOOK
+	/*
+	 * Offer the frame to the cut-through hook before the stack sees it.
+	 * ctf.ko forwards the flows the netfilter flowtable has offloaded,
+	 * which for a station means its traffic never enters the bridge or
+	 * netfilter at all. With nothing registered this is a NULL check.
+	 *
+	 * eth_type_trans() has already run, so skb->data is past the ethernet
+	 * header and skb_mac_header() names it; the hook handles that.
+	 */
+	if (real->dev && netdev_cutthrough_rx(real->dev, real))
+		return NET_RX_SUCCESS;
+#endif
+
 	return netif_rx(real);
 }
 
@@ -433,4 +489,13 @@ void wl_shadow_skb_exit(void)
 	 */
 	if (live)
 		pr_warn("wl: %d skb shadow(s) still live at unload\n", live);
+
+	/*
+	 * Destroying the cache with objects still in it would splat, and a
+	 * live shadow means something else is still holding a packet.
+	 */
+	if (!live) {
+		kmem_cache_destroy(wl_skb_cache);
+		wl_skb_cache = NULL;
+	}
 }
